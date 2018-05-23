@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sat May 19 15:49:46 2018
+
+@author: sleek_eagle
+"""
+
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import LSTM
+import numpy as np
+from NNpred import prepData
+from NNpred import getF_and_V_data
+from NNpred import trainNN
+from NNpred import scaleData
+from NNpred import scale_each_vector
+from NNpred import get_scaler_data
+from NNpred import scale_from_scalers
+from NNpred import inverse_scale_from_scalers
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from scipy.stats import norm
+import scipy.stats
+
+
+
+datapath = "/home/sleek_eagle/research/crypto/5mindata_filled.csv"
+data = pd.read_csv(datapath,sep=',')
+data['datetime'] = data['datetime'].str[:13]
+#prepare hourly data
+data = data.groupby(['datetime']).mean().reset_index()
+data['diff_price'] = data['avg_price'].diff()
+#shifting differences and get percentage differences
+avgs = pd.DataFrame(data[['datetime','avg_price']])
+avgs['index'] = avgs.index
+diffs = data[['diff_price']]
+diffs = diffs.dropna(axis = 0,how='any').reset_index().drop(columns = ['index'])
+diffs['index'] = diffs.index
+mer = pd.merge(left = avgs, right = diffs, how = 'outer', on = 'index').drop(columns = ['index'])
+mer['diff_per'] = mer['diff_price']/mer['avg_price']
+
+avgs = pd.DataFrame(mer[['datetime','avg_price']])
+#remove the first row
+avgs = avgs.iloc[1:avgs.shape[0],:].reset_index().drop(columns = ['index'])
+avgs['index'] = avgs.index
+diffs = pd.DataFrame(mer[['datetime','diff_price','diff_per']])
+diffs['index'] = diffs.index
+mer = pd.merge(left = avgs, right = diffs, how = 'inner',on = 'index').drop(columns = ['index','datetime_y'])
+mer.columns = ['datetime','avg_price','diff_price','diff_ratio']
+
+
+df = mer[['datetime','diff_ratio']].dropna(axis=0, how='any')
+df.columns = ['date','diff_ratio']
+
+lookback = 7
+pdata = prepData(df,lookback)
+[train_f,train_v,test_f,test_v,train_dates,test_dates] = getF_and_V_data(pdata,0.6)
+#scale data
+'''
+[train_f_scaled,train_v_scaled] = scale_each_vector(train_f,train_v)
+[test_f_scaled,scalers] = get_scaler_data(test_f)
+test_v_scaled = scale_from_scalers(test_v,scalers)
+test_v = test_v.reset_index().drop(columns = ['index'] )
+test_v.columns = ['diff_price']
+
+
+
+
+df = train_f_scaled
+numcols = df.shape[1]
+df[str(numcols)] = train_v_scaled
+
+model = fit_lstm(df,1,10,4)
+pred_scaled = forecast(model,1,test_f_scaled)
+#rescale data
+pred_scaled = pd.DataFrame(pred_scaled)
+pred = inverse_scale_from_scalers(pred_scaled,scalers)
+pred = pred_scaled
+
+plt.figure()
+plt.plot(pred)
+plt.plot(test_v)
+error = math.sqrt(mean_squared_error(test_v,pred))
+print(error)
+'''
+#*******************************
+#******************************
+#non-scaled version
+
+test_v = test_v.reset_index().drop(columns = ['index'] )
+test_v.columns = ['diff_price_ratio']
+
+df = train_f
+numcols = df.shape[1]
+df[str(numcols)] = train_v
+
+
+model = fit_lstm(df,1,10,2)
+pred = forecast(model,1,test_f)
+#rescale data
+pred = pd.DataFrame(pred)
+pred.columns = ['pred_diff_ratio']
+pred['datetime'] = test_dates['date'].values
+alldata = pd.merge(left=mer,right=pred,how='inner',on='datetime')
+alldata['index'] = alldata.index
+#shift avg_price
+avgs = pd.DataFrame(alldata[['avg_price','diff_ratio','diff_price']])
+avgs.columns = ['avg_price_shifted','diff_ratio_shifted','diff_price_shifted']
+indexes = avgs.index+1
+avgs['index'] = indexes
+alldata_mer = pd.merge(left=alldata,right=avgs,on='index',how='inner')
+alldata_mer['pred_price'] = alldata_mer['avg_price_shifted']*(1 + (alldata_mer['pred_diff_ratio']))
+alldata_mer['persistance_ratio_pred_price'] = alldata_mer['avg_price_shifted']*(1+(alldata_mer['diff_ratio_shifted']))
+alldata_mer['persistance_pred_price'] = alldata_mer['avg_price_shifted']
+alldata_mer['persistance_pred_price_error'] = alldata_mer['avg_price']-alldata_mer['persistance_pred_price']
+alldata_mer['persistance_diff_pred_price'] = alldata_mer['avg_price_shifted'] + alldata_mer['diff_price_shifted']
+
+
+plt.figure()
+mu, std = norm.fit(alldata_mer['persistance_pred_price_error'])
+# Plot the histogram.
+plt.hist(alldata_mer['persistance_pred_price_error'], bins=25, normed=True, alpha=0.6, color='g')
+#get percentile values
+scipy.stats.norm(100, 12).pdf(98)
+
+# Plot the PDF.
+xmin, xmax = plt.xlim()
+x = np.linspace(xmin, xmax, 100)
+p = norm.pdf(x, mu, std)
+plt.plot(x, p, 'k', linewidth=2)
+title = "Fit results: mu = %.2f,  std = %.2f" % (mu, std)
+plt.title(title)
+plt.show()
+
+
+
+
+plt.figure()
+plt.plot(alldata_mer['diff_ratio'])
+plt.plot(alldata_mer['pred_diff_ratio'])
+
+plt.figure()
+plt.plot(alldata_mer['avg_price'])
+plt.plot(alldata_mer['pred_price'])
+error = math.sqrt(mean_squared_error(alldata_mer['avg_price'],alldata_mer['pred_price']))
+print(error)
+
+#persistance plots
+plt.figure()
+plt.plot(alldata_mer['avg_price'])
+plt.plot(alldata_mer['persistance_pred_price'])
+error = math.sqrt(mean_squared_error(alldata_mer['avg_price'],alldata_mer['persistance_pred_price']))
+print(error)
+
+plt.figure()
+plt.plot(alldata_mer['avg_price'])
+plt.plot(alldata_mer['persistance_pred_price'])
+error = math.sqrt(mean_squared_error(alldata_mer['avg_price'],alldata_mer['persistance_pred_price']))
+print(error)
+
+plt.figure()
+plt.plot(alldata_mer['avg_price'])
+plt.plot(alldata_mer['persistance_diff_pred_price'])
+error = math.sqrt(mean_squared_error(alldata_mer['avg_price'],alldata_mer['persistance_diff_pred_price']))
+print(error)
+
+#*******************************
+#******************************
+
+#bulk-scaled version
+'''
+test_v = test_v.reset_index().drop(columns = ['index'] )
+test_v.columns = ['diff_price']
+
+df = train_f
+numcols = df.shape[1]
+df[str(numcols)] = train_v
+scaler = StandardScaler()
+scaler.fit(df)
+df = pd.DataFrame(scaler.transform(df))
+
+test = pd.DataFrame(data = test_f)
+numcols = test.shape[1]
+test[str(numcols)] = test_v['diff_price'].values
+
+test_scaled = pd.DataFrame(scaler.transform(test))
+
+test_f_scaled = test_scaled.iloc[:,0:test.shape[1]-1]
+
+
+
+model = fit_lstm(df,1,10,3)
+pred_scaled = forecast(model,1,test_f_scaled)
+#rescale data
+pred_scaled = pd.DataFrame(pred_scaled)
+test_scaled[(numcols)] = pred_scaled
+pred = pd.DataFrame(scaler.inverse_transform(test_scaled))[numcols]
+
+plt.figure()
+plt.plot(pred)
+plt.plot(test_v)
+error = math.sqrt(mean_squared_error(test_v,pred))
+print(error)
+'''
+
+def plot_errors(data):
+    5mindata = data
+    
+      
+    
+
+def forecast(model,batch_size,test_f_scaled):
+    X = np.array(test_f_scaled)
+    X = X.reshape(X.shape[0],1,X.shape[1])
+    pred = model.predict(X,batch_size=batch_size)
+    return pred
+    
+    
+def fit_lstm(train, batch_size, nb_epoch, neurons):
+    train = np.array(train)
+    X, y = train[:, 0:-1], train[:, -1]
+    X = X.reshape(X.shape[0], 1, X.shape[1])
+    model = Sequential()
+    model.add(LSTM(neurons, batch_input_shape=(batch_size, X.shape[1], X.shape[2]), stateful=True,dropout=0.1,recurrent_dropout = 0.0))
+    model.add(Dense(1))
+    model.compile(loss='mean_squared_error', optimizer='adam')
+    for i in range(nb_epoch):
+        model.fit(X, y, epochs=1, batch_size=batch_size, verbose=1, shuffle=False)
+        model.reset_states()
+    return model
+
+
